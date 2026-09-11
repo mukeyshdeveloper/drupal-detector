@@ -1,7 +1,13 @@
-import { analyze } from "@/lib/detect";
+import {
+  analyze,
+  emptyResult,
+  isCloudflareChallenge,
+  type DetectResult,
+} from "@/lib/detect";
 import { NextResponse } from "next/server";
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 function isBlockedHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/\.+$/, "");
@@ -51,78 +57,67 @@ function normalizeUrl(raw: string): string {
   return parsed.href;
 }
 
-export async function POST(req: Request) {
-  let url: string;
+export async function POST(req: Request): Promise<NextResponse<DetectResult>> {
+  let target: string;
   try {
     const body = await req.json();
-    url = body.url;
-    url = normalizeUrl(url);
+    target = normalizeUrl(body.url);
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Invalid URL", is_drupal: false, score: 0, hits: [] }, { status: 400 });
+    return NextResponse.json(
+      emptyResult("", e instanceof Error ? e.message : "Invalid URL"),
+      { status: 400 },
+    );
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 35000);
-  
   try {
-    const res = await fetch(url, {
+    const res = await fetch(target, {
       headers: {
         "User-Agent": UA,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
       },
       redirect: "follow",
       signal: controller.signal,
     });
-    
+
     const html = (await res.text()).slice(0, 500_000);
     const headers: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       headers[k] = v;
     });
-    
-    const result = analyze(html, headers, url, res.url, res.status);
-    return NextResponse.json(result);
+
+    if (isCloudflareChallenge(html, headers, res.status)) {
+      return NextResponse.json(
+        emptyResult(
+          target,
+          "Cloudflare blocked the server fetch. Open the site in your browser, View Source (Ctrl+U), and paste the HTML below.",
+          {
+            final_url: res.url,
+            http_status: res.status,
+            blocked: "cloudflare",
+          },
+        ),
+      );
+    }
+
+    return NextResponse.json(analyze(html, headers, target, res.url, res.status));
   } catch (e) {
-    const message =
-      e instanceof Error && e.name === "AbortError"
-        ? "The site took too long to respond."
-        : e instanceof Error
-          ? e.message
-          : "Could not fetch that page.";
-    return NextResponse.json({
-      url,
-      final_url: url,
-      http_status: 0,
-      is_drupal: false,
-      confidence: "none",
-      score: 0,
-      version_guess: null,
-      content_types_on_page: [],
-      fields_on_page: [],
-      field_types_on_page: [],
-      views_on_page: [],
-      view_displays_on_page: [],
-      views_fields_on_page: [],
-      panels: { panes: [], layouts: [] },
-      blocks_on_page: [],
-      regions_on_page: [],
-      taxonomy_term_ids: [],
-      modules_inferred: [],
-      themes_inferred: [],
-      drupal_settings_keys: [],
-      files: {
-        images: [],
-        pdfs: [],
-        docs: [],
-        other_files: [],
-        image_styles: [],
-        private_system_files: [],
-        files_base_detected: false,
-      },
-      hits: [],
-      error: message,
-    });
+    const aborted = e instanceof Error && e.name === "AbortError";
+    return NextResponse.json(
+      emptyResult(
+        target,
+        aborted
+          ? "The site took too long to respond (often Cloudflare stalling). Paste the page source instead."
+          : e instanceof Error
+            ? e.message
+            : "Could not fetch that page.",
+        { blocked: aborted ? "timeout" : "fetch" },
+      ),
+    );
   } finally {
     clearTimeout(timer);
   }

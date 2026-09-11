@@ -40,6 +40,7 @@ export type DetectResult = {
   files: FilesReport;
   hits: Hit[];
   error?: string | null;
+  blocked?: "cloudflare" | "timeout" | "fetch" | null;
 };
 
 type HtmlRule = [RegExp, string, number];
@@ -320,10 +321,10 @@ export function analyze(
     confidence,
     score,
     version_guess: vg,
-    content_types_on_page: [
+    content_types_on_page: uniq([
       ...findall(/\bnode-type-([a-z0-9-]+)/gi, html),
       ...findall(/\bnode--type-([a-z0-9-]+)/gi, html),
-    ],
+    ]),
     fields_on_page: findall(/\bfield-name-([a-z0-9-]+)/gi, html),
     field_types_on_page: findall(/\bfield-type-([a-z0-9-]+)/gi, html),
     views_on_page: findall(/\bview-id-([a-z0-9_-]+)/gi, html),
@@ -343,7 +344,10 @@ export function analyze(
       0,
       40,
     ),
-    regions_on_page: findall(/\bregion-([a-z0-9_-]+)/gi, html),
+    regions_on_page: uniq([
+      ...findall(/\bregion-([a-z0-9_-]+)/gi, html),
+      ...findall(/data-region=["']([a-z0-9_-]+)["']/gi, html),
+    ]),
     taxonomy_term_ids: findall(/\/taxonomy\/term\/(\d+)/gi, html).slice(0, 30),
     modules_inferred: MODULE_RULES.filter(([, re]) => re.test(html)).map(
       ([n]) => n,
@@ -353,5 +357,67 @@ export function analyze(
     files,
     hits,
     error: null,
+    blocked: null,
   };
+}
+
+export function emptyResult(
+  url: string,
+  error: string,
+  extra: Partial<DetectResult> = {},
+): DetectResult {
+  return {
+    url,
+    final_url: extra.final_url ?? url,
+    http_status: extra.http_status ?? 0,
+    is_drupal: false,
+    confidence: "none",
+    score: 0,
+    version_guess: null,
+    content_types_on_page: [],
+    fields_on_page: [],
+    field_types_on_page: [],
+    views_on_page: [],
+    view_displays_on_page: [],
+    views_fields_on_page: [],
+    panels: { panes: [], layouts: [] },
+    blocks_on_page: [],
+    regions_on_page: [],
+    taxonomy_term_ids: [],
+    modules_inferred: [],
+    themes_inferred: [],
+    drupal_settings_keys: [],
+    files: {
+      images: [],
+      pdfs: [],
+      docs: [],
+      other_files: [],
+      image_styles: [],
+      private_system_files: [],
+      files_base_detected: false,
+    },
+    hits: [],
+    error,
+    blocked: extra.blocked ?? null,
+  };
+}
+
+export function isCloudflareChallenge(
+  html: string,
+  headers: Record<string, string> = {},
+  status = 200,
+): boolean {
+  const h = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  if (/challenge/i.test(h["cf-mitigated"] || "")) return true;
+  if (status === 403 && /cloudflare/i.test(h.server || "")) return true;
+  const sample = html.slice(0, 8000);
+  return (
+    /cdn-cgi\/challenge-platform/i.test(sample) ||
+    /just a moment/i.test(sample) ||
+    /attention required.*cloudflare/i.test(sample) ||
+    /cf-browser-verification|_cf_chl|challenge-running/i.test(sample) ||
+    /enable javascript and cookies to continue/i.test(sample)
+  );
 }

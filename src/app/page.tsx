@@ -4,63 +4,53 @@ import { useState } from "react";
 import { Radar, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { DetectResult } from "@/lib/detect";
+import { analyze, emptyResult, type DetectResult } from "@/lib/detect";
 
 const SAMPLE = "https://portableapps.com/";
 
 export default function Home() {
+  const [mode, setMode] = useState<"url" | "source">("url");
   const [url, setUrl] = useState("");
+  const [source, setSource] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DetectResult | null>(null);
 
-  async function runScan(target = url) {
+  async function runUrlScan(target = url) {
     if (!target.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/scan", { 
-        method: "POST", 
+      const res = await fetch("/api/scan", {
+        method: "POST",
         body: JSON.stringify({ url: target }),
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
-      const data = await res.json();
+      const data: DetectResult = await res.json();
       setResult(data);
+      if (data.blocked === "cloudflare" || data.blocked === "timeout") {
+        setMode("source");
+      }
     } catch (e) {
-      setResult({
-        url: target,
-        final_url: target,
-        http_status: 0,
-        is_drupal: false,
-        confidence: "none",
-        score: 0,
-        version_guess: null,
-        content_types_on_page: [],
-        fields_on_page: [],
-        field_types_on_page: [],
-        views_on_page: [],
-        view_displays_on_page: [],
-        views_fields_on_page: [],
-        panels: { panes: [], layouts: [] },
-        blocks_on_page: [],
-        regions_on_page: [],
-        taxonomy_term_ids: [],
-        modules_inferred: [],
-        themes_inferred: [],
-        drupal_settings_keys: [],
-        files: {
-          images: [],
-          pdfs: [],
-          docs: [],
-          other_files: [],
-          image_styles: [],
-          private_system_files: [],
-          files_base_detected: false,
-        },
-        hits: [],
-        error: e instanceof Error ? e.message : "Scan failed",
-      });
+      setResult(
+        emptyResult(target, e instanceof Error ? e.message : "Scan failed", {
+          blocked: "fetch",
+        }),
+      );
+      setMode("source");
     } finally {
       setLoading(false);
     }
+  }
+
+  function runSourceScan() {
+    if (!source.trim()) return;
+    const data = analyze(
+      source,
+      {},
+      url || "pasted-source",
+      url || "pasted-source",
+      200,
+    );
+    setResult(data);
   }
 
   return (
@@ -77,34 +67,88 @@ export default function Home() {
             Drupal Trace
           </h1>
           <p className="mt-2 max-w-xl text-sm text-muted">
-            Paste a live URL. We fetch the page and score Drupal fingerprints —
-            generator tags, node types, fields, views, panels, and file paths.
+            Scan a URL, or paste HTML if Cloudflare blocks the fetch. Fingerprints
+            come from generator tags, data attributes, views, fields, and file paths.
           </p>
         </div>
       </header>
 
-      <form
-        className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-3 shadow-panel sm:flex-row sm:items-center"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void runScan();
-        }}
-      >
-        <Input
-          id="scan-url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://example.com"
-          autoComplete="url"
-          inputMode="url"
-          aria-label="Site URL"
-          className="sm:flex-1"
-        />
-        <Button type="submit" disabled={loading || !url.trim()} className="w-full sm:w-auto">
-          <Search className="size-4" />
-          {loading ? "Scanning…" : "Scan"}
-        </Button>
-      </form>
+      <div className="mb-3 flex gap-1 rounded-lg bg-elevated p-1 w-fit">
+        <button
+          type="button"
+          className={`h-9 rounded-md px-4 text-sm font-medium transition-colors ${mode === "url" ? "bg-surface text-fg" : "text-muted hover:text-fg"}`}
+          onClick={() => setMode("url")}
+        >
+          URL
+        </button>
+        <button
+          type="button"
+          className={`h-9 rounded-md px-4 text-sm font-medium transition-colors ${mode === "source" ? "bg-surface text-fg" : "text-muted hover:text-fg"}`}
+          onClick={() => setMode("source")}
+        >
+          Paste source
+        </button>
+      </div>
+
+      {mode === "url" ? (
+        <form
+          className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-3 shadow-panel sm:flex-row sm:items-center"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void runUrlScan();
+          }}
+        >
+          <Input
+            id="scan-url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://example.com"
+            autoComplete="url"
+            inputMode="url"
+            aria-label="Site URL"
+            className="sm:flex-1"
+          />
+          <Button
+            type="submit"
+            disabled={loading || !url.trim()}
+            className="w-full sm:w-auto"
+          >
+            <Search className="size-4" />
+            {loading ? "Scanning…" : "Scan"}
+          </Button>
+        </form>
+      ) : (
+        <form
+          className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-3 shadow-panel"
+          onSubmit={(e) => {
+            e.preventDefault();
+            runSourceScan();
+          }}
+        >
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="Optional URL label (for reference)"
+            aria-label="Optional URL"
+          />
+          <textarea
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            placeholder="Paste View Source HTML here (Ctrl+U on the live site)"
+            aria-label="Page HTML"
+            rows={8}
+            className="w-full resize-y rounded-md border border-border bg-elevated px-4 py-3 font-mono text-xs text-fg placeholder:text-subtle outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          />
+          <Button
+            type="submit"
+            disabled={!source.trim()}
+            className="w-full sm:w-auto sm:self-end"
+          >
+            <Search className="size-4" />
+            Analyze source
+          </Button>
+        </form>
+      )}
 
       <p className="mt-3 text-xs text-subtle">
         Try{" "}
@@ -112,18 +156,21 @@ export default function Home() {
           type="button"
           className="font-mono text-fg underline-offset-2 hover:underline"
           onClick={() => {
+            setMode("url");
             setUrl(SAMPLE);
-            void runScan(SAMPLE);
+            void runUrlScan(SAMPLE);
           }}
         >
           portableapps.com
         </button>{" "}
-        — a known Drupal 7 site.
+        (Drupal 7). Cloudflare sites like qed42.com usually need Paste source.
       </p>
 
       {!result && !loading && <EmptyHints />}
       {loading && <LoadingPanel />}
-      {result && !loading && <ResultPanel result={result} />}
+      {result && !loading && (
+        <ResultPanel result={result} onPaste={() => setMode("source")} />
+      )}
     </main>
   );
 }
@@ -146,7 +193,10 @@ function EmptyHints() {
   return (
     <section className="mt-10 grid gap-3 sm:grid-cols-3">
       {items.map((item) => (
-        <article key={item.k} className="rounded-lg border border-border bg-surface p-4">
+        <article
+          key={item.k}
+          className="rounded-lg border border-border bg-surface p-4"
+        >
           <h2 className="text-sm font-medium">{item.k}</h2>
           <p className="mt-2 text-sm text-muted">{item.v}</p>
         </article>
@@ -168,11 +218,36 @@ function LoadingPanel() {
   );
 }
 
-function ResultPanel({ result }: { result: DetectResult }) {
+function ResultPanel({
+  result,
+  onPaste,
+}: {
+  result: DetectResult;
+  onPaste: () => void;
+}) {
   if (result.error) {
     return (
       <section className="mt-8 rounded-xl border border-border bg-surface p-6">
         <p className="text-sm text-no">{result.error}</p>
+        {(result.blocked === "cloudflare" ||
+          result.blocked === "timeout" ||
+          result.blocked === "fetch") && (
+          <p className="mt-3 text-sm text-muted">
+            Open the site in your browser, press{" "}
+            <kbd className="rounded border border-border bg-elevated px-1.5 py-0.5 font-mono text-xs">
+              Ctrl+U
+            </kbd>{" "}
+            (View Source), copy all, then{" "}
+            <button
+              type="button"
+              className="text-fg underline-offset-2 hover:underline"
+              onClick={onPaste}
+            >
+              paste the HTML here
+            </button>
+            . That bypasses Cloudflare completely.
+          </p>
+        )}
       </section>
     );
   }
@@ -225,7 +300,10 @@ function ResultPanel({ result }: { result: DetectResult }) {
         <ChipCard title="Blocks" items={result.blocks_on_page} />
         <ChipCard
           title="Panels"
-          items={[...result.panels.layouts, ...result.panels.panes].slice(0, 24)}
+          items={[...result.panels.layouts, ...result.panels.panes].slice(
+            0,
+            24,
+          )}
         />
       </div>
 
@@ -274,8 +352,12 @@ function ResultPanel({ result }: { result: DetectResult }) {
 function ScoreRing({ score }: { score: number }) {
   return (
     <div className="flex size-24 flex-col items-center justify-center rounded-full border border-border bg-elevated">
-      <span className="font-mono text-2xl tabular-nums leading-none">{score}</span>
-      <span className="mt-1 text-xs uppercase tracking-wide text-subtle">score</span>
+      <span className="font-mono text-2xl tabular-nums leading-none">
+        {score}
+      </span>
+      <span className="mt-1 text-xs uppercase tracking-wide text-subtle">
+        score
+      </span>
     </div>
   );
 }
@@ -295,8 +377,8 @@ function ChipCard({ title, items }: { title: string; items: string[] }) {
         <ul className="mt-3 flex flex-wrap gap-1.5">
           {items.slice(0, 18).map((item) => (
             <li
-               key={item}
-               className="rounded-sm bg-elevated px-2 py-1 font-mono text-xs text-fg"
+              key={item}
+              className="rounded-sm bg-elevated px-2 py-1 font-mono text-xs text-fg"
             >
               {item}
             </li>
